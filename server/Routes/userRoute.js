@@ -5,6 +5,34 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const secret = process.env.SECRET;
 const upload = require('../Middleware/upload.js');
+const { spawn } = require('child_process');
+const AWS = require('aws-sdk');
+
+// AWS S3 instance
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION || 'us-east-1'
+});
+
+// Upload file to S3 helper
+const uploadToS3 = async (file, userId) => {
+  const key = `uploads/${userId}/${Date.now()}-${file.originalname}`;
+  const params = {
+    Bucket: process.env.S3_BUCKET_NAME,
+    Key: key,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    ACL: 'private'
+  };
+  const result = await s3.upload(params).promise();
+  return {
+    key: key,
+    url: result.Location,
+    filename: file.originalname,
+    contentType: file.mimetype
+  };
+};
 router = express.Router();
 
 router.post('/api/users/register', async (req, res) => {
@@ -103,9 +131,13 @@ router.get('/api/users/:userId', async (req, res) => {
 router.post('/api/chat', upload, async (req, res) => {
   try {
     const { userId, message } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'UserId is required' });
+    }
     
-    if (!userId || !message) {
-      return res.status(400).json({ error: 'UserId and message are required' });
+    // Allow empty message if files are uploaded
+    if (!message && (!req.files || req.files.length === 0)) {
+      return res.status(400).json({ error: 'Message or files are required' });
     }
 
     let uploadedFiles = [];
@@ -123,8 +155,6 @@ router.post('/api/chat', upload, async (req, res) => {
             contentType: uploadResult.contentType,
             uploadDate: new Date()
           });
-          
-          // For Python script, we'll pass the S3 URLs
           filePaths.push(uploadResult.url);
         } catch (uploadError) {
           console.error('File upload error:', uploadError);
@@ -134,33 +164,55 @@ router.post('/api/chat', upload, async (req, res) => {
 
     // Prepare data for Python script
     const inputData = {
-      message: message,
+      message: message || "Files uploaded", // Provide default message for file-only uploads
       userId: userId,
       hasFiles: filePaths.length > 0
     };
 
-    // Execute Python script
-    const pythonResult = await executePythonScript(inputData, filePaths);
-    const response = pythonResult.response || 'No response from model';
+    // Execute Python script using virtual environment
+    const pythonPath = './venv/Scripts/python.exe';
+    const python = spawn(pythonPath, ['./script.py']);
+    python.stdin.write(JSON.stringify(inputData));
+    python.stdin.end();
 
-    // Save chat to database
-    const chat = new Chat({
-      userId,
-      message,
-      response,
-      files: uploadedFiles
+    let output = '';
+    let error = '';
+
+    python.stdout.on('data', (data) => { output += data.toString(); });
+    python.stderr.on('data', (data) => { error += data.toString(); });
+
+    python.on('close', async (code) => {
+      let response = '';
+      if (code === 0) {
+        // Try to parse output as JSON, fallback to string
+        try {
+          const parsed = JSON.parse(output);
+          response = parsed.answer || output;
+        } catch (e) {
+          response = output;
+        }
+
+        // Save chat to database
+        const chat = new Chat({
+          userId,
+          message,
+          response,
+          files: uploadedFiles
+        });
+        await chat.save();
+
+        res.json({
+          chatId: chat._id,
+          message,
+          response,
+          files: uploadedFiles,
+          timestamp: chat.timestamp
+        });
+      } else {
+        console.error('Python script error:', error);
+        res.status(500).json({ error: error || 'Python script failed', code });
+      }
     });
-
-    await chat.save();
-
-    res.json({
-      chatId: chat._id,
-      message,
-      response,
-      files: uploadedFiles,
-      timestamp: chat.timestamp
-    });
-
   } catch (error) {
     console.error('Chat error:', error);
     res.status(500).json({ error: error.message });
@@ -248,6 +300,64 @@ router.get('/api/files/:userId/:filename', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+router.post('/run-python', (req, res) => {
+  const pythonPath = './venv/Scripts/python.exe';
+  const python = spawn(pythonPath, ['./script.py']); // Use virtual environment Python
+
+  let output = '';
+  let error = '';
+
+  // Collect output from Python script
+  python.stdout.on('data', (data) => {
+    output += data.toString();
+  });
+
+  python.stderr.on('data', (data) => {
+    error += data.toString();
+  });
+
+  // Send request body as JSON to Python script via stdin
+  python.stdin.write(JSON.stringify(req.body));
+  python.stdin.end();
+
+  python.on('close', (code) => {
+    if (code === 0) {
+      res.json({ success: true, output });
+    } else {
+      res.status(500).json({ success: false, error, code });
+    }
+  });
+});
+
+// Python script integration example
+router.post('/api/run-python-script', (req, res) => {
+  const python = spawn('python', ['-c', `import sys, json; data = json.load(sys.stdin); print(data['message'])`]);
+
+  let output = '';
+  let error = '';
+
+  // Collect output from Python script
+  python.stdout.on('data', (data) => {
+    output += data.toString();
+  });
+
+  python.stderr.on('data', (data) => {
+    error += data.toString();
+  });
+
+  // Send request body as JSON to Python script via stdin
+  python.stdin.write(JSON.stringify(req.body));
+  python.stdin.end();
+
+  python.on('close', (code) => {
+    if (code === 0) {
+      res.json({ success: true, output });
+    } else {
+      res.status(500).json({ success: false, error, code });
+    }
+  });
 });
 
 

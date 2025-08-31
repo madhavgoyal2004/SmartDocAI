@@ -2,7 +2,7 @@
 import React from 'react';
 import '../App.css';
 
-const FileUpload = ({ files, setFiles }) => {
+const fileUpload = ({ files, setFiles }) => {
   const handleFileChange = (e) => {
     const selectedFiles = Array.from(e.target.files);
     setFiles(prev => [...prev, ...selectedFiles]);
@@ -40,4 +40,4 @@ const FileUpload = ({ files, setFiles }) => {
   );
 };
 
-export default FileUpload;
+export default fileUpload;

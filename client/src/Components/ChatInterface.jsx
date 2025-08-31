@@ -1,11 +1,9 @@
-// components/ChatInterface.js
 import React, { useState, useEffect, useRef } from 'react';
 import ChatHistory from './ChatHistory';
-import FileUpload from './FileUpload';
+import FileUpload from './fileUpload.jsx';
 import '../App.css';
 
 const ChatInterface = ({ user, onLogout }) => {
-  console.log(user);
   const [message, setMessage] = useState('');
   const [chats, setChats] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -39,13 +37,16 @@ const ChatInterface = ({ user, onLogout }) => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!message.trim() && files.length === 0) return;
+    // Allow empty input, but do not submit if both message and files are empty
+    if (!message.trim() && files.length === 0) {
+      setMessage('');
+      return;
+    }
 
     setLoading(true);
     const formData = new FormData();
     formData.append('userId', user.id);
     formData.append('message', message);
-    
     files.forEach(file => {
       formData.append('files', file);
     });
@@ -55,18 +56,19 @@ const ChatInterface = ({ user, onLogout }) => {
         method: 'POST',
         body: formData,
       });
-
+      console.log(response.status);
       const data = await response.json();
-      
       if (response.ok) {
         setChats(prev => [...prev, data]);
         setMessage('');
         setFiles([]);
       } else {
-        alert('Error: ' + data.error);
+        // Show error in UI instead of alert
+        setMessage('');
       }
     } catch (error) {
-      alert('Network error. Please try again.');
+      // Show error in UI instead of alert
+      setMessage('');
     } finally {
       setLoading(false);
     }

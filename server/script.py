@@ -17,7 +17,7 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
 # Core LangChain imports
-from langchain.document_loaders import (
+from langchain_community.document_loaders import (
     PyPDFLoader,
     TextLoader,
     CSVLoader,
@@ -25,13 +25,12 @@ from langchain.document_loaders import (
     UnstructuredExcelLoader
 )
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.embeddings import GoogleGenerativeAIEmbeddings
-from langchain.llms import GoogleGenerativeAI
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.chains import ConversationalRetrievalChain
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain.chains import ConversationalRetrievalChain 
 from langchain.schema import Document
 
 # Environment and configuration
@@ -39,7 +38,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class ContextChatbot:
-    def __init__(self, google_api_key: str = None, model_name: str = "gemini-pro", 
+    def __init__(self, google_api_key: str = None, model_name: str = "gemini-2.5-pro", 
                  aws_access_key: str = None, aws_secret_key: str = None, aws_region: str = None):
         """
         Initialize the Context-Based Chatbot
@@ -55,11 +54,7 @@ class ContextChatbot:
         self.model_name = model_name
         self.vectorstore = None
         self.qa_chain = None
-        self.memory = ConversationBufferWindowMemory(
-            memory_key="chat_history",
-            return_messages=True,
-            k=10  # Keep last 10 exchanges
-        )
+        self.chat_history = ChatMessageHistory()
         
         # AWS S3 Configuration
         self.aws_access_key = aws_access_key or os.getenv("AWS_ACCESS_KEY_ID")
@@ -77,15 +72,15 @@ class ContextChatbot:
                 aws_secret_access_key=self.aws_secret_key,
                 region_name=self.aws_region
             )
-            print("✅ AWS S3 client initialized successfully")
+            print("✅ AWS S3 client initialized successfully", file=sys.stderr)
         else:
             # Try using default AWS credentials (IAM roles, profiles, etc.)
             try:
                 self.s3_client = boto3.client('s3', region_name=self.aws_region)
-                print("✅ AWS S3 client initialized with default credentials")
+                print("✅ AWS S3 client initialized with default credentials", file=sys.stderr)
             except NoCredentialsError:
                 self.s3_client = None
-                print("⚠️  AWS credentials not found. S3 functionality will be disabled.")
+                print("⚠️  AWS credentials not found. S3 functionality will be disabled.", file=sys.stderr)
         
         # Initialize embeddings and LLM
         self.embeddings = GoogleGenerativeAIEmbeddings(
@@ -93,13 +88,13 @@ class ContextChatbot:
             google_api_key=self.google_api_key
         )
         
-        self.llm = GoogleGenerativeAI(
+        self.llm = ChatGoogleGenerativeAI(
             model=self.model_name,
             google_api_key=self.google_api_key,
             temperature=0.3
         )
         
-        print("✅ Chatbot initialized successfully")
+        print("✅ Chatbot initialized successfully", file=sys.stderr)
 
     def download_from_s3(self, s3_paths: List[str], temp_dir: str) -> List[str]:
         """
@@ -314,14 +309,13 @@ class ContextChatbot:
             input_variables=["context", "chat_history", "question"]
         )
         
-        # Create conversational retrieval chain
+        # Create conversational retrieval chain without deprecated memory
         self.qa_chain = ConversationalRetrievalChain.from_llm(
             llm=self.llm,
             retriever=self.vectorstore.as_retriever(search_kwargs={"k": 5}),
-            memory=self.memory,
             combine_docs_chain_kwargs={"prompt": custom_prompt},
             return_source_documents=True,
-            verbose=True
+            verbose=False
         )
 
     def query(self, question: str) -> Dict[str, Any]:
@@ -343,7 +337,8 @@ class ContextChatbot:
         
         try:
             # Get response from the chain
-            response = self.qa_chain({"question": question})
+            chat_history = []  # Use empty chat history for now
+            response = self.qa_chain({"question": question, "chat_history": chat_history})
             
             # Extract source information
             sources = []
@@ -369,15 +364,15 @@ class ContextChatbot:
             }
 
     def reset_conversation(self):
-        """Reset conversation memory"""
-        self.memory.clear()
-        print("🔄 Conversation history cleared")
+        """Reset conversation history"""
+        self.chat_history.clear()
+        print("🔄 Conversation history cleared", file=sys.stderr)
 
     def save_vectorstore(self, path: str):
         """Save vector store to disk"""
         if self.vectorstore:
             self.vectorstore.save_local(path)
-            print(f"💾 Vector store saved to {path}")
+            print(f"💾 Vector store saved to {path}", file=sys.stderr)
 
     def load_vectorstore(self, path: str):
         """Load vector store from disk"""
@@ -398,21 +393,51 @@ class ContextChatbot:
                 input_variables=["context", "chat_history", "question"]
             )
             
+            # Create conversational retrieval chain without deprecated memory
             self.qa_chain = ConversationalRetrievalChain.from_llm(
                 llm=self.llm,
                 retriever=self.vectorstore.as_retriever(search_kwargs={"k": 5}),
-                memory=self.memory,
                 combine_docs_chain_kwargs={"prompt": custom_prompt},
                 return_source_documents=True,
-                verbose=True
+                verbose=False
             )
             
-            print(f"📚 Vector store loaded from {path}")
+            print(f"📚 Vector store loaded from {path}", file=sys.stderr)
         except Exception as e:
-            print(f"❌ Error loading vector store: {str(e)}")
+            print(f"❌ Error loading vector store: {str(e)}", file=sys.stderr)
 
 def main():
-    """Main function for command line interface"""
+    # If called from Node backend, read JSON from stdin
+    if not sys.stdin.isatty():
+        try:
+            input_data = json.load(sys.stdin)
+            chatbot = ContextChatbot()
+            # Use 'message' as the question if present
+            question = input_data.get("message") or input_data.get("question") or ""
+            if not question:
+                print(json.dumps({"answer": "No question provided."}))
+                sys.exit(0)
+            result = chatbot.query(question)
+            # Only print the answer JSON to stdout
+            print(json.dumps({"answer": result.get("answer", "")}), flush=True)
+            sys.exit(0)
+        except Exception as e:
+            print(json.dumps({"answer": f"An error occurred: {str(e)}"}), flush=True)
+            sys.exit(1)
+
+    # If called with a single JSON argument, parse and act accordingly (CLI mode)
+    if len(sys.argv) == 2 and sys.argv[1].startswith('{'):
+        try:
+            input_data = json.loads(sys.argv[1])
+            chatbot = ContextChatbot()
+            if input_data.get("action") == "query":
+                result = chatbot.query(input_data.get("question", ""))
+                print(json.dumps(result, ensure_ascii=False))
+            # Add more actions as needed
+            sys.exit(0)
+        except Exception as e:
+            print(json.dumps({"status": "error", "error": str(e)}))
+            sys.exit(1)
     parser = argparse.ArgumentParser(description="Context-Based Chatbot using LangChain with S3 support")
     parser.add_argument("--action", required=True, choices=["load", "query", "reset", "list-s3"], 
                        help="Action to perform")

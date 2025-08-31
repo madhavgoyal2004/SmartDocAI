@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom';
-import ChatInterface from './Components/ChatInterface';
+import ChatInterface from './Components/chatInterface';
 import UserAuth from './Components/userAuth';
 import './App.css';
 

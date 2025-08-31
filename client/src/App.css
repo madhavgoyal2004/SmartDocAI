@@ -249,6 +249,7 @@ button:disabled {
   background: #e3f2fd;
   border-radius: 8px;
   border-left: 4px solid #2196f3;
+  color: #011474;
 }
 
 .ai-response {
@@ -257,6 +258,7 @@ button:disabled {
   background: #f3e5f5;
   border-radius: 8px;
   border-left: 4px solid #9c27b0;
+  color: #710385;
 }
 
 .timestamp {
